@@ -1,0 +1,32 @@
+# Build output
+build/
+*/build/
+.gradle/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine settings (SDK path)
+local.properties
+
+# Secrets and signing keys: kabhi commit na karein
+*.jks
+*.keystore
+*.env
+.env*
+secrets.properties
+keystore.properties
+
+# Personal data
+*.db
+*.db-journal
+*.csv
+*.pdf
+*.apk
+*.aab
+
+# OS files
+.DS_Store
+Thumbs.db
