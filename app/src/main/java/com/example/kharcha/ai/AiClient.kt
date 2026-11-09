@@ -9,7 +9,7 @@ import java.net.URL
 
 enum class Provider(val label: String, val defaultModel: String) {
     GEMINI("Google Gemini", "gemini-2.5-flash-lite"),
-    GROQ("Groq", "llama-3.1-8b-instant")
+    GROQ("Groq", "openai/gpt-oss-20b")
 }
 
 data class ParsedEntry(
@@ -39,6 +39,38 @@ Sirf is JSON format mein jawab do, koi aur text nahi:
 {"reply":"...","entries":[{"amount":0,"category":"","item":"","tag":"","note":"","date":null}]}
 reply: Roman Urdu mein chhota confirmation, jaise "Do entries samajh aayi hain".
 """
+
+    /** Key ke saath available models ki list. Settings mein dikhane ke liye. */
+    suspend fun listModels(provider: Provider, apiKey: String): List<String> =
+        withContext(Dispatchers.IO) {
+            when (provider) {
+                Provider.GEMINI -> {
+                    val raw = get(
+                        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                        mapOf("x-goog-api-key" to apiKey)
+                    )
+                    val arr = JSONObject(raw).optJSONArray("models") ?: JSONArray()
+                    (0 until arr.length()).mapNotNull { i ->
+                        val o = arr.getJSONObject(i)
+                        val methods = o.optJSONArray("supportedGenerationMethods")
+                        val canChat = methods != null && (0 until methods.length())
+                            .any { methods.getString(it) == "generateContent" }
+                        if (canChat) o.optString("name").removePrefix("models/") else null
+                    }.sorted()
+                }
+                Provider.GROQ -> {
+                    val raw = get(
+                        "https://api.groq.com/openai/v1/models",
+                        mapOf("Authorization" to "Bearer $apiKey")
+                    )
+                    val arr = JSONObject(raw).optJSONArray("data") ?: JSONArray()
+                    (0 until arr.length())
+                        .map { arr.getJSONObject(it).optString("id") }
+                        .filter { it.isNotBlank() }
+                        .sorted()
+                }
+            }
+        }
 
     suspend fun parse(
         provider: Provider,
@@ -108,23 +140,47 @@ reply: Roman Urdu mein chhota confirmation, jaise "Do entries samajh aayi hain".
             .getString("content")
     }
 
+    private fun get(url: String, headers: Map<String, String>): String {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            headers.forEach { (k, v) -> setRequestProperty(k, v) }
+        }
+        try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code !in 200..299) {
+                throw IllegalStateException("API error $code: ${text.take(300)}")
+            }
+            return text
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun post(url: String, headers: Map<String, String>, body: JSONObject): String {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 20_000
             readTimeout = 60_000
             doOutput = true
+            instanceFollowRedirects = false
             setRequestProperty("Content-Type", "application/json")
             headers.forEach { (k, v) -> setRequestProperty(k, v) }
         }
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
+            if (code in 300..399) {
+                val location = conn.getHeaderField("Location") ?: "(none)"
+                throw IllegalStateException("Redirect $code, location: $location")
+            }
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                // Error message mein key kabhi nahi dikhayi jati
-                throw IllegalStateException("API error $code. Key ya model check karein.")
+                throw IllegalStateException("API error $code: ${text.take(300)}")
             }
             return text
         } finally {
